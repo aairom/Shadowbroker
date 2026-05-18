@@ -663,7 +663,7 @@ async def api_wormhole_leave(request: Request):
     }
 
 
-@router.get("/api/wormhole/identity")
+@router.get("/api/wormhole/identity", dependencies=[Depends(require_local_operator)])
 @limiter.limit("240/minute")
 async def api_wormhole_identity(request: Request):
     try:
@@ -674,7 +674,7 @@ async def api_wormhole_identity(request: Request):
         raise HTTPException(status_code=500, detail="wormhole_identity_failed") from exc
 
 
-@router.post("/api/wormhole/identity/bootstrap")
+@router.post("/api/wormhole/identity/bootstrap", dependencies=[Depends(require_local_operator)])
 @limiter.limit("10/minute")
 async def api_wormhole_identity_bootstrap(request: Request):
     bootstrap_wormhole_identity()
@@ -773,7 +773,7 @@ async def api_wormhole_sign(request: Request, body: WormholeSignRequest):
     )
 
 
-@router.post("/api/wormhole/gate/enter")
+@router.post("/api/wormhole/gate/enter", dependencies=[Depends(require_local_operator)])
 @limiter.limit("20/minute")
 async def api_wormhole_gate_enter(request: Request, body: WormholeGateRequest):
     gate_id = str(body.gate_id or "")
@@ -787,7 +787,7 @@ async def api_wormhole_gate_enter(request: Request, body: WormholeGateRequest):
     return result
 
 
-@router.post("/api/wormhole/gate/leave")
+@router.post("/api/wormhole/gate/leave", dependencies=[Depends(require_local_operator)])
 @limiter.limit("20/minute")
 async def api_wormhole_gate_leave(request: Request, body: WormholeGateRequest):
     return leave_gate(str(body.gate_id or ""))
@@ -829,7 +829,7 @@ async def api_wormhole_gate_key_rotate(request: Request, body: WormholeGateRotat
     return result
 
 
-@router.post("/api/wormhole/gate/persona/create")
+@router.post("/api/wormhole/gate/persona/create", dependencies=[Depends(require_local_operator)])
 @limiter.limit("20/minute")
 async def api_wormhole_gate_persona_create(
     request: Request, body: WormholeGatePersonaCreateRequest
@@ -845,7 +845,7 @@ async def api_wormhole_gate_persona_create(
     return result
 
 
-@router.post("/api/wormhole/gate/persona/activate")
+@router.post("/api/wormhole/gate/persona/activate", dependencies=[Depends(require_local_operator)])
 @limiter.limit("20/minute")
 async def api_wormhole_gate_persona_activate(
     request: Request, body: WormholeGatePersonaActivateRequest
@@ -861,7 +861,7 @@ async def api_wormhole_gate_persona_activate(
     return result
 
 
-@router.post("/api/wormhole/gate/persona/clear")
+@router.post("/api/wormhole/gate/persona/clear", dependencies=[Depends(require_local_operator)])
 @limiter.limit("20/minute")
 async def api_wormhole_gate_persona_clear(request: Request, body: WormholeGateRequest):
     gate_id = str(body.gate_id or "")
@@ -875,7 +875,7 @@ async def api_wormhole_gate_persona_clear(request: Request, body: WormholeGateRe
     return result
 
 
-@router.post("/api/wormhole/gate/persona/retire")
+@router.post("/api/wormhole/gate/persona/retire", dependencies=[Depends(require_local_operator)])
 @limiter.limit("20/minute")
 async def api_wormhole_gate_persona_retire(
     request: Request, body: WormholeGatePersonaActivateRequest
@@ -944,7 +944,7 @@ async def api_wormhole_gate_message_compose(request: Request, body: WormholeGate
     return await _m.api_wormhole_gate_message_compose(request, body)
 
 
-@router.post("/api/wormhole/gate/message/sign-encrypted")
+@router.post("/api/wormhole/gate/message/sign-encrypted", dependencies=[Depends(require_local_operator)])
 @limiter.limit("30/minute")
 async def api_wormhole_gate_message_sign_encrypted(
     request: Request,
@@ -1004,14 +1004,14 @@ async def api_wormhole_gate_messages_decrypt(request: Request, body: WormholeGat
     return await _m.api_wormhole_gate_messages_decrypt(request, body)
 
 
-@router.post("/api/wormhole/gate/state/export")
+@router.post("/api/wormhole/gate/state/export", dependencies=[Depends(require_local_operator)])
 @limiter.limit("30/minute")
 async def api_wormhole_gate_state_export(request: Request, body: WormholeGateRequest):
     import main as _m
     return await _m.api_wormhole_gate_state_export(request, body)
 
 
-@router.post("/api/wormhole/gate/proof")
+@router.post("/api/wormhole/gate/proof", dependencies=[Depends(require_local_operator)])
 @limiter.limit("30/minute")
 async def api_wormhole_gate_proof(request: Request, body: WormholeGateRequest):
     proof = _sign_gate_access_proof(str(body.gate_id or ""))
@@ -1360,7 +1360,7 @@ async def api_wormhole_health(request: Request):
     return _redact_wormhole_status(full_state, authenticated=ok)
 
 
-@router.post("/api/wormhole/connect")
+@router.post("/api/wormhole/connect", dependencies=[Depends(require_local_operator)])
 @limiter.limit("10/minute")
 async def api_wormhole_connect(request: Request):
     settings = read_wormhole_settings()

@@ -49,8 +49,12 @@ export async function controlPlaneJson<T>(
     const fallback =
       res.status === 429
         ? 'control_plane_rate_limited'
+        : res.status === 530
+          ? 'local_control_plane_unavailable'
+          : res.status === 502
+            ? 'backend_unavailable'
         : `control_plane_request_failed:${res.status || 'unknown'}`;
-    throw new Error(data?.detail || data?.message || fallback);
+    throw new Error(data?.detail || data?.message || data?.error || fallback);
   }
   return data as T;
 }

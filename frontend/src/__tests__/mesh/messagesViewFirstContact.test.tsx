@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
   buildMailboxClaims: vi.fn(async () => []),
   countDmMailboxes: vi.fn(async () => ({ ok: true, count: 0 })),
   ensureRegisteredDmKey: vi.fn(async () => ({ dhPubKey: 'local-dh', dhAlgo: 'X25519' })),
-  fetchDmPublicKey: vi.fn(async () => ({ dh_pub_key: 'peer-dh', dh_algo: 'X25519' })),
+  fetchDmPublicKey: vi.fn(async () => ({ agent_id: '!sb_peer', dh_pub_key: 'peer-dh', dh_algo: 'X25519' })),
   pollDmMailboxes: vi.fn(async () => ({ ok: true, messages: [] })),
   sendDmMessage: vi.fn(async () => ({ ok: true, transport: 'relay' })),
   sendOffLedgerConsentMessage: vi.fn(async () => ({ ok: true, transport: 'relay' })),
@@ -252,7 +252,7 @@ describe('MessagesView first-contact trust UX', () => {
     mocks.pollDmMailboxes.mockResolvedValue({ ok: true, messages: [] });
     mocks.countDmMailboxes.mockResolvedValue({ ok: true, count: 0 });
     mocks.ensureRegisteredDmKey.mockResolvedValue({ dhPubKey: 'local-dh', dhAlgo: 'X25519' });
-    mocks.fetchDmPublicKey.mockResolvedValue({ dh_pub_key: 'peer-dh', dh_algo: 'X25519' });
+    mocks.fetchDmPublicKey.mockResolvedValue({ agent_id: '!sb_peer', dh_pub_key: 'peer-dh', dh_algo: 'X25519' });
     mocks.sendOffLedgerConsentMessage.mockResolvedValue({ ok: true, transport: 'relay' });
     mocks.canUseWormholeBootstrap.mockResolvedValue(false);
     mocks.exportWormholeDmInvite.mockResolvedValue({
@@ -334,8 +334,9 @@ describe('MessagesView first-contact trust UX', () => {
     await openComposeForRecipient('!sb_invited', 'hello to pinned peer');
 
     expect(screen.queryByText('Unverified First Contact')).not.toBeInTheDocument();
-    expect(await screen.findByText('ROOT LOCAL QUORUM')).toBeInTheDocument();
-    expect(await screen.findByText(/Local quorum root rootabcd\.\.123456/i)).toBeInTheDocument();
+    expect(screen.queryByText('ROOT LOCAL QUORUM')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Local quorum root rootabcd\.\.123456/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Fingerprint/i)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Send Secure Mail' })).toBeEnabled();
   });
 
@@ -375,7 +376,34 @@ describe('MessagesView first-contact trust UX', () => {
     expect(screen.queryByText(/still warming up/i)).not.toBeInTheDocument();
   }, 10000);
 
-  it('does not flatten witness policy not met into a generic witnessed root label', async () => {
+  it('repairs the local sending key before sending instead of surfacing backend key jargon', async () => {
+    contactsState = {
+      '!sb_pinned': {
+        alias: 'Pinned Peer',
+        blocked: false,
+        trust_level: 'invite_pinned',
+        dhPubKey: 'peer-dh',
+        remotePrekeyFingerprint: 'abcdef123456',
+      },
+    };
+    mocks.ensureRegisteredDmKey
+      .mockResolvedValueOnce({ ok: true, dhPubKey: '', dhAlgo: 'X25519', detail: 'Missing DH public key' })
+      .mockResolvedValueOnce({ ok: true, dhPubKey: 'local-dh-repaired', dhAlgo: 'X25519' });
+    mocks.sendDmMessage.mockResolvedValueOnce({ ok: true, transport: 'relay' });
+
+    renderMessagesView();
+    await openComposeForRecipient('!sb_pinned', 'hello after repair');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send Secure Mail' }));
+
+    await waitFor(() => expect(mocks.ensureRegisteredDmKey).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mocks.sendDmMessage).toHaveBeenCalled());
+    expect(await screen.findByText(/Mail delivered to Pinned Peer/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Local DM key is unavailable/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Missing DH public key/i)).not.toBeInTheDocument();
+  });
+
+  it('shows saved contacts without witness-policy implementation detail', async () => {
     contactsState = {
       '!sb_policy': {
         alias: 'Policy Peer',
@@ -404,8 +432,37 @@ describe('MessagesView first-contact trust UX', () => {
     renderMessagesView();
     fireEvent.click(screen.getByRole('button', { name: 'CONTACTS' }));
 
-    expect(await screen.findByText(/Witness-policy root rootpoli\.\.123456/i)).toBeInTheDocument();
+    expect(await screen.findByText('Saved Contact')).toBeInTheDocument();
+    expect(screen.queryByText(/Witness-policy root rootpoli\.\.123456/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Witnessed root rootpoli\.\.123456/i)).not.toBeInTheDocument();
+  });
+
+  it('hydrates Wormhole contacts on first load even when a local browser identity exists', async () => {
+    let wormholeIdentityResolved = false;
+    contactsState = {
+      '!sb_saved': {
+        alias: 'Saved Person',
+        blocked: false,
+        trust_level: 'invite_pinned',
+        invitePinnedPrekeyLookupHandle: 'handle-saved',
+        invitePinnedTrustFingerprint: 'savedfingerprint123456',
+      },
+    };
+    mocks.isWormholeSecureRequired.mockResolvedValue(true);
+    mocks.fetchWormholeIdentity.mockImplementation(async () => {
+      wormholeIdentityResolved = true;
+      return { node_id: '!sb_local', public_key: 'local-pub' };
+    });
+    mocks.hydrateWormholeContacts.mockImplementation(async () =>
+      wormholeIdentityResolved ? contactsState : {},
+    );
+
+    renderMessagesView();
+    fireEvent.click(screen.getByRole('button', { name: 'CONTACTS' }));
+
+    expect(await screen.findByText('Saved Person')).toBeInTheDocument();
+    expect(screen.queryByText(/No approved secure contacts yet/i)).not.toBeInTheDocument();
+    expect(mocks.fetchWormholeIdentity).toHaveBeenCalled();
   });
 
   it('shows an import-invite shortcut for unpinned contacts in the contact list', async () => {
@@ -426,7 +483,7 @@ describe('MessagesView first-contact trust UX', () => {
     expect(screen.getByLabelText(/Local Alias/i)).toHaveValue('!sb_unpinned');
   });
 
-  it('surfaces pending contact requests in the contact list with approve and deny actions', async () => {
+  it('surfaces pending contact requests in a top-level requests tab with approve and deny actions', async () => {
     localStorage.setItem(
       'sb_infonet_mailbox_v1:!sb_local',
       JSON.stringify({
@@ -464,7 +521,7 @@ describe('MessagesView first-contact trust UX', () => {
     });
 
     renderMessagesView();
-    fireEvent.click(screen.getByRole('button', { name: 'CONTACTS' }));
+    fireEvent.click(await screen.findByRole('button', { name: /REQUESTS/i }));
 
     expect(await screen.findByText('Contact Requests')).toBeInTheDocument();
     expect(await screen.findByText('1 pending')).toBeInTheDocument();
@@ -576,13 +633,13 @@ describe('MessagesView first-contact trust UX', () => {
 
     expect(
       await screen.findByText(
-        /Import or re-import a signed invite before sending a contact request; legacy direct lookup is disabled\./i,
+        /This contact needs their full contact address once before messages can be sent/i,
       ),
     ).toBeInTheDocument();
     expect(mocks.fetchDmPublicKey).not.toHaveBeenCalled();
   });
 
-  it('announces attested invite imports as INVITE PINNED', async () => {
+  it('announces attested invite imports as a saved contact', async () => {
     mocks.importWormholeDmInvite.mockResolvedValueOnce({
       ok: true,
       peer_id: '!sb_attested',
@@ -595,32 +652,34 @@ describe('MessagesView first-contact trust UX', () => {
     fireEvent.click(screen.getByRole('button', { name: 'CONTACTS' }));
     expect(await screen.findByText("Paste Someone's Address")).toBeInTheDocument();
 
-    fireEvent.change(screen.getByPlaceholderText(/Paste the full text copied/i), {
+    fireEvent.change(screen.getByPlaceholderText(/Paste a short address/i), {
       target: { value: JSON.stringify({ invite: { event_type: 'dm_invite', payload: {} } }) },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Import Address' }));
 
-    expect(
-      await screen.findByText(/INVITE PINNED for !sb_attested \(invitefp\.\.tested\)\./i),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/Contact saved: !sb_attested\./i)).toBeInTheDocument();
+    expect(await screen.findByText('Saved Contact')).toBeInTheDocument();
+    expect(screen.queryByText(/INVITE PINNED for/i)).not.toBeInTheDocument();
   });
 
-  it('generates and copies the full signed public address instead of the lookup handle', async () => {
+  it('automatically creates a share address and keeps copy actions simple', async () => {
     renderMessagesView();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Generate Address' }));
-
-    await waitFor(() => expect(mocks.writeClipboard).toHaveBeenCalled());
-    const copied = String(mocks.writeClipboard.mock.calls[0][0] || '');
-    expect(copied).toContain('"type": "shadowbroker.infonet.dm.invite"');
-    expect(copied).toContain('"prekey_lookup_handle": "handle-123"');
-    expect(copied).not.toBe('handle-123');
-    expect(await screen.findByText(/Generated and copied/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Contact address ready/i)).toBeInTheDocument();
+    expect(await screen.findByText('handle-123')).toBeInTheDocument();
     expect(screen.getByText(/Signed invite ready/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Copy Short Address/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Copy Full Address/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Copy Short Address/i }));
+
+    await waitFor(() => expect(mocks.writeClipboard).toHaveBeenCalledWith('handle-123'));
+    const copied = String(mocks.writeClipboard.mock.calls.at(-1)?.[0] || '');
+    expect(copied).toBe('handle-123');
     expect(screen.queryByText(/shadowbroker\.infonet\.dm\.invite/i)).not.toBeInTheDocument();
   });
 
-  it('does not advertise legacy handle-only addresses as copyable public addresses', async () => {
+  it('does not advertise legacy handle-only addresses as copyable contact addresses', async () => {
     localStorage.setItem(
       'sb_infonet_dm_addresses_v1:!sb_local',
       JSON.stringify({
@@ -641,25 +700,33 @@ describe('MessagesView first-contact trust UX', () => {
 
     renderMessagesView();
 
-    expect(await screen.findByText(/Generate an address, then send it to someone/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Contact address ready/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'CONTACTS' }));
 
     expect(await screen.findByText('Legacy handle')).toBeInTheDocument();
     expect(screen.getByText('Address unavailable locally.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Copy' })).toBeDisabled();
+    expect(screen.getAllByRole('button', { name: 'Copy Short' }).some((button) => !button.hasAttribute('disabled'))).toBe(true);
+    expect(screen.getAllByRole('button', { name: 'Copy Full' }).some((button) => button.hasAttribute('disabled'))).toBe(true);
   });
 
-  it('explains raw lookup handles instead of showing a JSON parser error', async () => {
+  it('sends a contact request from a short address instead of requiring JSON', async () => {
     renderMessagesView();
     fireEvent.click(screen.getByRole('button', { name: 'CONTACTS' }));
     expect(await screen.findByText("Paste Someone's Address")).toBeInTheDocument();
 
-    fireEvent.change(screen.getByPlaceholderText(/Paste the full text copied/i), {
+    fireEvent.change(screen.getByPlaceholderText(/Paste a short address/i), {
       target: { value: 'f0eee9e9ccf849bcb2d86c0d7a1e0669c75be4e05533b0f6c67' },
     });
+    fireEvent.click(screen.getByRole('button', { name: 'Send Request' }));
 
-    expect(await screen.findByText(/only a short address ID/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Import Address' })).toBeDisabled();
+    await waitFor(() => expect(mocks.sendOffLedgerConsentMessage).toHaveBeenCalled());
+    expect(await screen.findByText(/Contact request sent to/i)).toBeInTheDocument();
+    expect(mocks.fetchDmPublicKey).toHaveBeenCalledWith(
+      'http://localhost:8000',
+      '',
+      'f0eee9e9ccf849bcb2d86c0d7a1e0669c75be4e05533b0f6c67',
+    );
+    expect(mocks.sendOffLedgerConsentMessage).toHaveBeenCalled();
     expect(screen.queryByText(/Unexpected number in JSON/i)).not.toBeInTheDocument();
     expect(mocks.importWormholeDmInvite).not.toHaveBeenCalled();
   });
@@ -675,7 +742,7 @@ describe('MessagesView first-contact trust UX', () => {
     fireEvent.click(screen.getByRole('button', { name: 'CONTACTS' }));
     expect(await screen.findByText("Paste Someone's Address")).toBeInTheDocument();
 
-    const addressField = screen.getByPlaceholderText(/Paste the full text copied/i);
+    const addressField = screen.getByPlaceholderText(/Paste a short address/i);
     fireEvent.paste(addressField, {
       clipboardData: {
         getData: () => signedAddress,
@@ -687,7 +754,7 @@ describe('MessagesView first-contact trust UX', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Advanced Details' }));
 
-    expect(screen.getByLabelText('Raw copied public address')).toHaveValue(signedAddress);
+    expect(screen.getByLabelText('Raw copied contact address')).toHaveValue(signedAddress);
   });
 
   it('imports a copied address without waiting for secure mail warm-up', async () => {
@@ -710,17 +777,113 @@ describe('MessagesView first-contact trust UX', () => {
     fireEvent.click(screen.getByRole('button', { name: 'CONTACTS' }));
     expect(await screen.findByText("Paste Someone's Address")).toBeInTheDocument();
 
-    fireEvent.change(screen.getByPlaceholderText(/Paste the full text copied/i), {
+    fireEvent.change(screen.getByPlaceholderText(/Paste a short address/i), {
       target: { value: JSON.stringify({ invite: { event_type: 'dm_invite', payload: {} } }) },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Import Address' }));
 
-    expect(await screen.findByText(/INVITE PINNED for !sb_now \(invitefp-now\)\./i)).toBeInTheDocument();
+    expect(await screen.findByText(/Contact saved: !sb_now\./i)).toBeInTheDocument();
     expect(mocks.importWormholeDmInvite).toHaveBeenCalled();
     expect(screen.queryByText(/Secure mail is still warming up/i)).not.toBeInTheDocument();
   });
 
-  it('announces compat invite imports as TOFU PINNED with backend detail', async () => {
+  it('saves pending-delivery contacts without showing prekey jargon', async () => {
+    mocks.importWormholeDmInvite.mockResolvedValueOnce({
+      ok: true,
+      peer_id: '!sb_pending',
+      trust_fingerprint: 'invitefp-pending',
+      trust_level: 'invite_pinned',
+      pending_prekey: true,
+      detail: 'Contact saved.',
+      contact: {
+        alias: 'Pending Person',
+        blocked: false,
+        trust_level: 'invite_pinned',
+        invitePinnedPrekeyLookupHandle: 'handle-pending',
+        invitePinnedTrustFingerprint: 'invitefp-pending',
+        dhPubKey: '',
+      },
+    });
+
+    renderMessagesView();
+    fireEvent.click(screen.getByRole('button', { name: 'CONTACTS' }));
+    expect(await screen.findByText("Paste Someone's Address")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText(/Paste a short address/i), {
+      target: { value: JSON.stringify({ invite: { event_type: 'dm_invite', payload: {} } }) },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Import Address' }));
+
+    expect(await screen.findByText(/Contact saved: Pending Person\./i)).toBeInTheDocument();
+    expect(await screen.findByText('Saved Contact')).toBeInTheDocument();
+    expect(screen.queryByText(/prekey/i)).not.toBeInTheDocument();
+  });
+
+  it('saves mail locally when a saved contact is not reachable yet', async () => {
+    contactsState = {
+      '!sb_pending': {
+        alias: 'Pending Person',
+        blocked: false,
+        trust_level: 'invite_pinned',
+        invitePinnedPrekeyLookupHandle: 'handle-pending',
+        invitePinnedTrustFingerprint: 'invitefp-pending',
+        dhPubKey: '',
+      },
+    };
+    mocks.fetchDmPublicKey.mockResolvedValueOnce({ agent_id: '!sb_pending', dh_pub_key: '', dh_algo: 'X25519' });
+
+    renderMessagesView();
+    await openComposeForRecipient('!sb_pending', 'hello when ready');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send Secure Mail' }));
+
+    expect(await screen.findByText(/Mail is saved locally and will send automatically when the contact is reachable/i)).toBeInTheDocument();
+    expect(mocks.sendOffLedgerConsentMessage).not.toHaveBeenCalled();
+    expect(screen.queryByText(/delivery key has not reached/i)).not.toBeInTheDocument();
+  });
+
+  it('removes an approved contact immediately from the visible contact list', async () => {
+    contactsState = {
+      '!sb_remove': {
+        alias: 'Remove Me',
+        blocked: false,
+        trust_level: 'invite_pinned',
+        invitePinnedTrustFingerprint: 'removefingerprint123456',
+        dhPubKey: 'peer-dh',
+      },
+    };
+    mocks.removeContact.mockImplementation((peerId: string) => {
+      delete contactsState[peerId];
+    });
+
+    renderMessagesView();
+    fireEvent.click(screen.getByRole('button', { name: 'CONTACTS' }));
+
+    expect(await screen.findByText('Remove Me')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+
+    expect(await screen.findByText(/Removed contact: Remove Me\./i)).toBeInTheDocument();
+    expect(screen.queryByText('Remove Me')).not.toBeInTheDocument();
+  });
+
+  it('explains unresolved address delivery without exposing backend jargon', async () => {
+    mocks.importWormholeDmInvite.mockRejectedValueOnce(new Error('peer prekey lookup unavailable'));
+
+    renderMessagesView();
+    fireEvent.click(screen.getByRole('button', { name: 'CONTACTS' }));
+    expect(await screen.findByText("Paste Someone's Address")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText(/Paste a short address/i), {
+      target: { value: JSON.stringify({ invite: { event_type: 'dm_invite', payload: {} } }) },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Import Address' }));
+
+    expect(await screen.findByText(/This address is valid, but contact delivery is not ready on this node yet/i)).toBeInTheDocument();
+    expect(screen.queryByText('peer prekey lookup unavailable')).not.toBeInTheDocument();
+    expect(screen.queryByText(/sender prekey/i)).not.toBeInTheDocument();
+  });
+
+  it('announces compat invite imports as a saved contact without backend detail', async () => {
     mocks.importWormholeDmInvite.mockResolvedValueOnce({
       ok: true,
       peer_id: '!sb_compat',
@@ -734,17 +897,16 @@ describe('MessagesView first-contact trust UX', () => {
     fireEvent.click(screen.getByRole('button', { name: 'CONTACTS' }));
     expect(await screen.findByText("Paste Someone's Address")).toBeInTheDocument();
 
-    fireEvent.change(screen.getByPlaceholderText(/Paste the full text copied/i), {
+    fireEvent.change(screen.getByPlaceholderText(/Paste a short address/i), {
       target: { value: JSON.stringify({ invite: { event_type: 'dm_invite', payload: {} } }) },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Import Address' }));
 
+    expect(await screen.findByText(/Contact saved: !sb_compat\./i)).toBeInTheDocument();
+    expect(screen.queryByText(/TOFU PINNED for/i)).not.toBeInTheDocument();
     expect(
-      await screen.findByText(/TOFU PINNED for !sb_compat \(invitefp\.\.compat\)\./i),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/legacy invite imported as tofu_pinned; SAS verification required before first contact/i),
-    ).toBeInTheDocument();
+      screen.queryByText(/legacy invite imported as tofu_pinned; SAS verification required before first contact/i),
+    ).not.toBeInTheDocument();
   });
 
   it('surfaces stable root continuity breaks on invite re-import', async () => {
@@ -783,7 +945,7 @@ describe('MessagesView first-contact trust UX', () => {
     fireEvent.click(screen.getByRole('button', { name: 'CONTACTS' }));
     expect(await screen.findByText("Paste Someone's Address")).toBeInTheDocument();
 
-    fireEvent.change(screen.getByPlaceholderText(/Paste the full text copied/i), {
+    fireEvent.change(screen.getByPlaceholderText(/Paste a short address/i), {
       target: { value: JSON.stringify({ invite: { event_type: 'dm_invite', payload: {} } }) },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Import Address' }));

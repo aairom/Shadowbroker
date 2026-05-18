@@ -266,7 +266,7 @@ async def force_refresh(request: Request):
     return {"status": "refreshing in background"}
 
 
-@router.post("/api/ais/feed")
+@router.post("/api/ais/feed", dependencies=[Depends(require_local_operator)])
 @limiter.limit("60/minute")
 async def ais_feed(request: Request):
     """Accept AIS-catcher HTTP JSON feed (POST decoded AIS messages)."""
@@ -304,7 +304,7 @@ async def update_viewport(vp: ViewportUpdate, request: Request):  # noqa: ARG001
     return {"status": "ok"}
 
 
-@router.post("/api/layers")
+@router.post("/api/layers", dependencies=[Depends(require_local_operator)])
 @limiter.limit("30/minute")
 async def update_layers(update: LayerUpdate, request: Request):
     """Receive frontend layer toggle state. Starts/stops streams accordingly."""

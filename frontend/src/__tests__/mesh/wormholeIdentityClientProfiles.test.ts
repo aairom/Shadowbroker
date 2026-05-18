@@ -1357,7 +1357,9 @@ describe('wormholeIdentityClient strict profile hints', () => {
       }),
     );
 
-    expect(controlPlaneJson).toHaveBeenCalledWith('/api/wormhole/dm/root-health');
+    expect(controlPlaneJson).toHaveBeenCalledWith('/api/wormhole/dm/root-health', {
+      requireAdminSession: false,
+    });
   });
 
   it('prepares the interactive lane through the configured wormhole runtime and bootstraps identity state', async () => {

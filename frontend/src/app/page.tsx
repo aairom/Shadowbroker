@@ -203,8 +203,8 @@ export default function Dashboard() {
     uap_sightings: true,
     // Biosurveillance
     wastewater: true,
-    // CrowdThreat
-    crowdthreat: true,
+    // CrowdThreat is operator opt-in only.
+    crowdthreat: false,
     // Shodan
     shodan_overlay: false,
     // AI Intel

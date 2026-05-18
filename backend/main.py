@@ -3061,6 +3061,17 @@ def _request_private_surface_warmup(*, path: str, method: str, current_tier: str
     )
 
 
+def _is_invite_scoped_prekey_bundle_lookup(request: Request, path: str) -> bool:
+    if request.method.upper() != "GET" or str(path or "").strip() != "/api/mesh/dm/prekey-bundle":
+        return False
+    try:
+        lookup_token = str(request.query_params.get("lookup_token", "") or "").strip()
+        agent_id = str(request.query_params.get("agent_id", "") or "").strip()
+    except Exception:
+        return False
+    return bool(lookup_token) and not agent_id
+
+
 def _resume_private_delivery_background_work(*, current_tier: str, reason: str) -> None:
     pending_items = private_delivery_outbox.pending_items()
     if not pending_items:
@@ -3190,6 +3201,17 @@ async def enforce_high_privacy_mesh(request: Request, call_next):
                     # should not hard-fail just because the hidden
                     # transport has not finished coming up yet.
                     request.state._private_control_transport_pending = current_tier == "public_degraded"
+                    request.state._private_lane_current_tier = current_tier
+                elif _is_invite_scoped_prekey_bundle_lookup(request, path):
+                    # A copied DM address carries a high-entropy invite lookup
+                    # handle. Returning the public prekey bundle for that
+                    # handle is the bootstrap step that lets first contact get
+                    # saved; blocking it behind the full private lane creates a
+                    # circular warm-up failure. Stable agent_id lookup still
+                    # follows the normal transport-tier policy.
+                    request.state._invite_prekey_lookup_transport_pending = (
+                        current_tier == "public_degraded"
+                    )
                     request.state._private_lane_current_tier = current_tier
                 else:
                     # Tor-style: instead of failing, keep trying in the
@@ -3323,7 +3345,7 @@ async def force_refresh(request: Request):
     return {"status": "refreshing in background"}
 
 
-@app.post("/api/ais/feed")
+@app.post("/api/ais/feed", dependencies=[Depends(require_local_operator)])
 @limiter.limit("60/minute")
 async def ais_feed(request: Request):
     """Accept AIS-catcher HTTP JSON feed (POST decoded AIS messages)."""
@@ -3418,7 +3440,7 @@ class LayerUpdate(BaseModel):
     layers: dict[str, bool]
 
 
-@app.post("/api/layers")
+@app.post("/api/layers", dependencies=[Depends(require_local_operator)])
 @limiter.limit("30/minute")
 async def update_layers(update: LayerUpdate, request: Request):
     """Receive frontend layer toggle state. Starts/stops streams accordingly."""
@@ -9812,7 +9834,7 @@ async def api_wormhole_leave(request: Request):
     }
 
 
-@app.get("/api/wormhole/identity")
+@app.get("/api/wormhole/identity", dependencies=[Depends(require_local_operator)])
 @limiter.limit("30/minute")
 async def api_wormhole_identity(request: Request):
     try:
@@ -9825,7 +9847,7 @@ async def api_wormhole_identity(request: Request):
         raise HTTPException(status_code=500, detail="wormhole_identity_failed") from exc
 
 
-@app.post("/api/wormhole/identity/bootstrap")
+@app.post("/api/wormhole/identity/bootstrap", dependencies=[Depends(require_local_operator)])
 @limiter.limit("10/minute")
 async def api_wormhole_identity_bootstrap(request: Request):
     bootstrap_wormhole_identity()
@@ -10605,7 +10627,7 @@ async def api_wormhole_sign(request: Request, body: WormholeSignRequest):
     )
 
 
-@app.post("/api/wormhole/gate/enter")
+@app.post("/api/wormhole/gate/enter", dependencies=[Depends(require_local_operator)])
 @limiter.limit("20/minute")
 async def api_wormhole_gate_enter(request: Request, body: WormholeGateRequest):
     gate_id = str(body.gate_id or "")
@@ -10619,7 +10641,7 @@ async def api_wormhole_gate_enter(request: Request, body: WormholeGateRequest):
     return result
 
 
-@app.post("/api/wormhole/gate/leave")
+@app.post("/api/wormhole/gate/leave", dependencies=[Depends(require_local_operator)])
 @limiter.limit("20/minute")
 async def api_wormhole_gate_leave(request: Request, body: WormholeGateRequest):
     return leave_gate(str(body.gate_id or ""))
@@ -10661,7 +10683,7 @@ async def api_wormhole_gate_key_rotate(request: Request, body: WormholeGateRotat
     return result
 
 
-@app.post("/api/wormhole/gate/persona/create")
+@app.post("/api/wormhole/gate/persona/create", dependencies=[Depends(require_local_operator)])
 @limiter.limit("20/minute")
 async def api_wormhole_gate_persona_create(
     request: Request, body: WormholeGatePersonaCreateRequest
@@ -10677,7 +10699,7 @@ async def api_wormhole_gate_persona_create(
     return result
 
 
-@app.post("/api/wormhole/gate/persona/activate")
+@app.post("/api/wormhole/gate/persona/activate", dependencies=[Depends(require_local_operator)])
 @limiter.limit("20/minute")
 async def api_wormhole_gate_persona_activate(
     request: Request, body: WormholeGatePersonaActivateRequest
@@ -10693,7 +10715,7 @@ async def api_wormhole_gate_persona_activate(
     return result
 
 
-@app.post("/api/wormhole/gate/persona/clear")
+@app.post("/api/wormhole/gate/persona/clear", dependencies=[Depends(require_local_operator)])
 @limiter.limit("20/minute")
 async def api_wormhole_gate_persona_clear(request: Request, body: WormholeGateRequest):
     gate_id = str(body.gate_id or "")
@@ -10707,7 +10729,7 @@ async def api_wormhole_gate_persona_clear(request: Request, body: WormholeGateRe
     return result
 
 
-@app.post("/api/wormhole/gate/persona/retire")
+@app.post("/api/wormhole/gate/persona/retire", dependencies=[Depends(require_local_operator)])
 @limiter.limit("20/minute")
 async def api_wormhole_gate_persona_retire(
     request: Request, body: WormholeGatePersonaActivateRequest
@@ -10788,7 +10810,7 @@ async def api_wormhole_gate_message_compose(request: Request, body: WormholeGate
     return composed
 
 
-@app.post("/api/wormhole/gate/message/sign-encrypted")
+@app.post("/api/wormhole/gate/message/sign-encrypted", dependencies=[Depends(require_local_operator)])
 @limiter.limit("30/minute")
 async def api_wormhole_gate_message_sign_encrypted(
     request: Request,
@@ -11000,13 +11022,13 @@ async def api_wormhole_gate_messages_decrypt(request: Request, body: WormholeGat
     return {"ok": True, "results": results}
 
 
-@app.post("/api/wormhole/gate/state/export")
+@app.post("/api/wormhole/gate/state/export", dependencies=[Depends(require_local_operator)])
 @limiter.limit("30/minute")
 async def api_wormhole_gate_state_export(request: Request, body: WormholeGateRequest):
     return export_gate_state_snapshot_with_repair(str(body.gate_id or ""))
 
 
-@app.post("/api/wormhole/gate/proof")
+@app.post("/api/wormhole/gate/proof", dependencies=[Depends(require_local_operator)])
 @limiter.limit("30/minute")
 async def api_wormhole_gate_proof(request: Request, body: WormholeGateRequest):
     proof = _sign_gate_access_proof(str(body.gate_id or ""))
@@ -11553,7 +11575,7 @@ async def api_wormhole_health(request: Request):
     return _redact_wormhole_status(full_state, authenticated=ok)
 
 
-@app.post("/api/wormhole/connect")
+@app.post("/api/wormhole/connect", dependencies=[Depends(require_local_operator)])
 @limiter.limit("10/minute")
 async def api_wormhole_connect(request: Request):
     settings = read_wormhole_settings()

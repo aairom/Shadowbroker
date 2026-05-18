@@ -17,7 +17,7 @@ import time
 from typing import Any
 
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives.asymmetric import ed25519, x25519
 
 from services.mesh.mesh_crypto import (
     build_signature_payload,
@@ -464,6 +464,37 @@ def _bundle_fingerprint(data: dict[str, Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _ensure_dm_dh_material(data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Repair legacy/corrupt DM identities that kept signing keys but lost DH material."""
+    if str(data.get("dh_pub_key", "") or "").strip() and str(data.get("dh_private_key", "") or "").strip():
+        return data, False
+
+    dh_priv = x25519.X25519PrivateKey.generate()
+    dh_priv_raw = dh_priv.private_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    dh_pub_raw = dh_priv.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    repaired = {
+        **dict(data or {}),
+        "dh_pub_key": base64.b64encode(dh_pub_raw).decode("ascii"),
+        "dh_algo": "X25519",
+        "dh_private_key": base64.b64encode(dh_priv_raw).decode("ascii"),
+        "last_dh_timestamp": int(time.time()),
+        "bundle_fingerprint": "",
+        "bundle_sequence": 0,
+        "bundle_registered_at": 0,
+        "prekey_bundle_registered_at": 0,
+        "prekey_transparency_head": "",
+        "prekey_transparency_size": 0,
+    }
+    return _write_identity(repaired), True
+
+
 def trust_fingerprint_for_identity_material(
     *,
     agent_id: str,
@@ -830,10 +861,11 @@ def _sign_dm_invite_payload(
 
 def register_wormhole_dm_key(force: bool = False) -> dict[str, Any]:
     data = read_wormhole_identity()
+    data, repaired_dh = _ensure_dm_dh_material(data)
 
     timestamp = int(time.time())
     fingerprint = _bundle_fingerprint(data)
-    if not force and fingerprint and fingerprint == data.get("bundle_fingerprint"):
+    if not force and not repaired_dh and fingerprint and fingerprint == data.get("bundle_fingerprint"):
         return {
             "ok": True,
             **_public_view(data),
@@ -1525,11 +1557,101 @@ def import_wormhole_dm_invite(invite: dict[str, Any], *, alias: str = "") -> dic
             "detail": "compat dm invite import disabled; ask the sender to re-export a current signed invite",
         }
 
+    def _prekey_missing_or_pending(detail: str) -> bool:
+        lower = str(detail or "").strip().lower()
+        return any(
+            phrase in lower
+            for phrase in (
+                "prekey bundle not found",
+                "invite prekey bundle not found",
+                "peer prekey lookup unavailable",
+                "peer prekey lookup still preparing",
+                "transport tier insufficient",
+                "preparing_private_lane",
+            )
+        )
+
+    def _pin_pending_invite_prekey(detail: str) -> dict[str, Any]:
+        if invite_version < DM_INVITE_VERSION:
+            return {"ok": False, "detail": detail or "invite prekey bundle not found"}
+        invite_root_distribution = _verify_dm_invite_root_distribution(payload)
+        if not invite_root_distribution.get("ok"):
+            return invite_root_distribution
+        attested = _verify_dm_invite_identity_attestation(
+            envelope=envelope,
+            payload=payload,
+            resolved_root_node_id=str(invite_root_distribution.get("root_node_id", "") or ""),
+            resolved_root_public_key=str(invite_root_distribution.get("root_public_key", "") or ""),
+            resolved_root_public_key_algo=str(
+                invite_root_distribution.get("root_public_key_algo", "Ed25519") or "Ed25519"
+            ),
+            resolved_root_manifest_fingerprint=str(
+                invite_root_distribution.get("root_manifest_fingerprint", "") or ""
+            ).strip().lower(),
+        )
+        if not attested.get("ok"):
+            return attested
+        pending_peer_id = str(verified.get("peer_id", "") or "").strip()
+        trust_fingerprint = str(verified.get("trust_fingerprint", "") or "").strip().lower()
+        contact = pin_wormhole_dm_invite(
+            pending_peer_id,
+            invite_payload={
+                "trust_fingerprint": trust_fingerprint,
+                "public_key": "",
+                "public_key_algo": "Ed25519",
+                "identity_dh_pub_key": "",
+                "dh_algo": "X25519",
+                "prekey_lookup_handle": lookup_handle,
+                "issued_at": int(payload.get("issued_at", 0) or 0),
+                "expires_at": int(payload.get("expires_at", 0) or 0),
+                "label": str(payload.get("label", "") or ""),
+                "root_node_id": str(attested.get("root_node_id", "") or ""),
+                "root_public_key": str(attested.get("root_public_key", "") or ""),
+                "root_public_key_algo": str(attested.get("root_public_key_algo", "Ed25519") or "Ed25519"),
+                "root_fingerprint": str(attested.get("root_fingerprint", "") or ""),
+                "root_manifest_fingerprint": str(invite_root_distribution.get("root_manifest_fingerprint", "") or ""),
+                "root_witness_policy_fingerprint": str(
+                    invite_root_distribution.get("root_witness_policy_fingerprint", "") or ""
+                ),
+                "root_witness_threshold": _safe_int(
+                    invite_root_distribution.get("root_witness_threshold", 0) or 0,
+                    0,
+                ),
+                "root_witness_count": _safe_int(invite_root_distribution.get("root_witness_count", 0) or 0, 0),
+                "root_witness_domain_count": _safe_int(
+                    invite_root_distribution.get("root_witness_domain_count", 0) or 0,
+                    0,
+                ),
+                "root_manifest_generation": _safe_int(
+                    invite_root_distribution.get("root_manifest_generation", 0) or 0,
+                    0,
+                ),
+                "root_rotation_proven": bool(invite_root_distribution.get("root_rotation_proven")),
+            },
+            alias=resolved_alias,
+            attested=True,
+        )
+        return {
+            "ok": True,
+            "peer_id": pending_peer_id,
+            "invite_peer_id": pending_peer_id,
+            "trust_fingerprint": trust_fingerprint,
+            "trust_level": str(contact.get("trust_level", "") or ""),
+            "detail": "Contact saved.",
+            "invite_attested": True,
+            "pending_prekey": True,
+            "prekey_detail": detail or "invite prekey bundle not found",
+            "contact": contact,
+        }
+
     from services.mesh.mesh_wormhole_prekey import fetch_dm_prekey_bundle
 
     fetched = fetch_dm_prekey_bundle(lookup_token=lookup_handle)
     if not fetched.get("ok"):
-        return {"ok": False, "detail": str(fetched.get("detail", "") or "invite prekey bundle not found")}
+        fetch_detail = str(fetched.get("detail", "") or "invite prekey bundle not found")
+        if _prekey_missing_or_pending(fetch_detail):
+            return _pin_pending_invite_prekey(fetch_detail)
+        return {"ok": False, "detail": fetch_detail}
 
     resolved_peer_id = str(fetched.get("agent_id", "") or "").strip()
     if not resolved_peer_id:

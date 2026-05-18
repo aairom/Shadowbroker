@@ -379,14 +379,13 @@ async def api_refresh_layer_feed(request: Request, layer_id: str):
 # Agent Actions endpoint — frontend polls this for UI commands from the agent
 # ---------------------------------------------------------------------------
 
-@router.get("/api/ai/agent-actions")
+@router.get("/api/ai/agent-actions", dependencies=[Depends(require_local_operator)])
 @limiter.limit("120/minute")
 async def get_agent_actions(request: Request):
     """Frontend polls for pending agent display actions (destructive read).
 
-    No auth required — this only contains display directives (show image,
-    fly to location), not sensitive data. The agent authenticates when
-    pushing actions through the command channel.
+    Local operator access is required because polling destructively drains
+    the shared operator action queue.
     """
     actions = pop_agent_actions()
     return {"ok": True, "actions": actions}
