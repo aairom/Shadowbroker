@@ -146,7 +146,12 @@ def get_operator_handle() -> str:
         # 3. On-disk handle from a previous run.
         persisted = _load_persisted_operator_handle()
         if persisted:
-            _OPERATOR_HANDLE_CACHE = _normalize_handle(persisted)
+            normalized = _normalize_handle(persisted)
+            # Migrate legacy auto-generated handles (pre-Round-7a ``shadow-`` prefix).
+            if normalized.startswith("shadow-"):
+                normalized = f"operator-{normalized[len('shadow-'):]}"
+                _persist_operator_handle(normalized)
+            _OPERATOR_HANDLE_CACHE = normalized
             return _OPERATOR_HANDLE_CACHE
 
         # 4. Generate, persist, return.
@@ -178,7 +183,7 @@ def outbound_user_agent(purpose: str = "") -> str:
 
     Returns something like::
 
-        Shadowbroker/0.9 (operator: shadow-7f3a92; purpose: wikipedia;
+        Shadowbroker/0.9 (operator: operator-7f3a92; purpose: wikipedia;
          +https://github.com/BigBodyCobain/Shadowbroker/issues)
 
     The ``purpose`` is optional but recommended — it tells the upstream

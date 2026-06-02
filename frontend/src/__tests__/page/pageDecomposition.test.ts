@@ -203,6 +203,19 @@ describe('page.tsx decomposition — no admin-session/proxy regression', () => {
     const locateBar = readAppFile('LocateBar.tsx');
     expect(locateBar).toContain('API_BASE');
     expect(locateBar).toContain('/api/geocode/search');
+    expect(locateBar).not.toContain('nominatim.openstreetmap.org');
+  });
+
+  it('useRegionDossier uses backend dossier APIs (no browser-direct enrichment)', () => {
+    const hook = fs.readFileSync(
+      path.resolve(__dirname, '../../hooks/useRegionDossier.ts'),
+      'utf-8',
+    );
+    expect(hook).toContain('/api/region-dossier');
+    expect(hook).toContain('/api/sentinel2/search');
+    expect(hook).not.toContain('nominatim.openstreetmap.org');
+    expect(hook).not.toContain('planetarycomputer.microsoft.com');
+    expect(hook).not.toContain('restcountries.com');
   });
 });
 
