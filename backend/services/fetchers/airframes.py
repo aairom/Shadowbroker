@@ -593,9 +593,15 @@ def lookup_datalink_messages(
         if queued_refresh:
             _ensure_stagger_worker()
 
+    from services.fetchers.acars_summarize import prepare_datalink_display
+
+    display = prepare_datalink_display(messages)
+
     return {
         "configured": True,
-        "messages": messages,
+        "messages": display["messages"],
+        "hidden_count": display["hidden_count"],
+        "total_count": display["total_count"],
         "last_success_at": last_success_at,
         "queued_refresh": queued_refresh,
         "priority_scan": queued_refresh,
